@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("org.jetbrains.kotlin.kapt")
+
 }
 
 android {
@@ -129,6 +131,11 @@ dependencies {
     implementation("org.java-websocket:Java-WebSocket:1.5.3")
 // Google Home SDK (if available)
     implementation("com.google.android.gms:play-services-home:17.0.0")
+
+    // Database Dependencies
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
 
 
 }

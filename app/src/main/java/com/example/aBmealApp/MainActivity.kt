@@ -43,16 +43,19 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.view.Gravity
 import android.widget.EditText
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import java.util.Date
 
 class MainActivity : AppCompatActivity() {
 
     // Constants
     companion object {
-        const val WEATHER_API_KEY = "2782a547ddb4775eeefe1edfc6361b36"
+        const val WEATHER_API_KEY = "8fe7872d64895ba45a7e0604c39c6bc6"
         const val BASE_WEATHER_URL = "https://api.openweathermap.org/data/2.5/"
-        const val SPOONACULAR_API_KEY = "20323a01082945aa8fcb6e57518eb0e6"
+        const val SPOONACULAR_API_KEY = "6205b4b146e346b8805dd3e3268372e0"
         const val BASE_SPOONACULAR_URL = "https://api.spoonacular.com/"
-        const val GEMINI_API_KEY = "AIzaSyDosQrqNAG6bLb9tSCB4eneaEOlZIEvmlg"
+        const val GEMINI_API_KEY = "AIzaSyBZiHM0MaCyTkqnM76-S5WOFO4TD3xsAwY"
         const val BASE_GEMINI_URL = "https://generativelanguage.googleapis.com/"
         const val SMART_KITCHEN_BASE_URL = "http://192.168.56.1/"
         const val LOCATION_PERMISSION_REQUEST_CODE = 1001
@@ -76,6 +79,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var webSocketClient: WebSocketClient? = null
 
+    private lateinit var recipeDatabase: RecipeDatabase
+    private lateinit var recipeRepository: RecipeRepository
+    private var currentWeatherCondition: WeatherCondition? = null
+
     private val weatherService = WeatherService()
     private val spoonacularService = SpoonacularService()
     private val geminiService = GeminiService()
@@ -94,6 +101,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         createSimpleLayout()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+        recipeDatabase = RecipeDatabase.getDatabase(this)
+        recipeRepository = RecipeRepository(recipeDatabase.recipeHistoryDao())
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) {
@@ -155,7 +165,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val testButton = Button(this).apply {
-            text = "🏠 Test Smart Home Features"
+
             setBackgroundColor(0xFF4CAF50.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             setPadding(32, 16, 32, 16)
@@ -164,6 +174,8 @@ class MainActivity : AppCompatActivity() {
                 startActivity(intent)
             }
         }
+
+
 
         val headerLayout = createHeaderLayout()
         val subtitleText = createSubtitleText()
@@ -179,8 +191,10 @@ class MainActivity : AppCompatActivity() {
         mainContainer.addView(startButton)
         mainContainer.addView(preferencesCard)
         mainContainer.addView(locationTextView)
+        mainContainer.addView(createHistoryButton())
         mainContainer.addView(footerText)
-        mainContainer.addView(testButton)
+
+
 
         scrollView.addView(mainContainer)
         setContentView(scrollView)
@@ -398,6 +412,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+
+    private fun createHistoryButton(): Button {
+        return Button(this).apply {
+            text = "📚 Recipe History"
+            textSize = 18f
+            setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD))
+            setPadding(48, 24, 48, 24)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(0xFF9C27B0.toInt())
+            elevation = 8f
+
+            setOnClickListener {
+                showRecipeHistory()
+            }
+
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            params.setMargins(32, 8, 32, 8)
+            params.gravity = Gravity.CENTER
+            layoutParams = params
+        }
+    }
+
     private fun createLocationTextView(): TextView {
         return TextView(this).apply {
             text = "📍 Getting your location..."
@@ -514,6 +553,7 @@ class MainActivity : AppCompatActivity() {
 
     // Weather Display Updates
     private fun updateWeatherDisplay(condition: WeatherCondition) {
+        currentWeatherCondition = condition
         weatherIcon.text = getWeatherEmoji(condition)
         weatherIcon.animate().scaleX(1.2f).scaleY(1.2f).setDuration(200).withEndAction {
             weatherIcon.animate().scaleX(1f).scaleY(1f).setDuration(200)
@@ -795,6 +835,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showRecipeDetails(recipe: RecipeDetails) {
+
+        currentWeatherCondition?.let { weather ->
+            lifecycleScope.launch {
+                try {
+                    recipeRepository.saveRecipe(recipe, weather)
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "Recipe saved to history ✓", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Exception) {
+                    Log.e("RecipeDB", "Failed to save recipe: ${e.message}")
+                }
+            }
+        }
+
         val scrollView = ScrollView(this)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -892,6 +946,164 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Shopping List - ${meal.name}")
             .setMessage(ingredientList)
             .setPositiveButton("OK", null)
+            .show()
+    }
+
+    //History Integration
+
+    private fun showRecipeHistory() {
+        lifecycleScope.launch {
+            try {
+                val recipes = recipeRepository.getAllRecipes()
+
+                if (recipes.isEmpty()) {
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "No recipe history yet. View some recipes to get started!", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+
+                val recipeNames = recipes.map {
+                    "${it.recipeName} (Used ${it.usedCount}x) ${if (it.isFavorite) "⭐" else ""}"
+                }.toTypedArray()
+
+                runOnUiThread {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("📚 Recipe History (${recipes.size} recipes)")
+                        .setItems(recipeNames) { _, which ->
+                            val selected = recipes[which]
+                            showRecipeHistoryDetails(selected)
+                        }
+                        .setNeutralButton("View Favorites") { _, _ ->
+                            showFavoriteRecipes()
+                        }
+                        .setNegativeButton("Close", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    showError(this@MainActivity, "Failed to load recipe history: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun showFavoriteRecipes() {
+        lifecycleScope.launch {
+            try {
+                val favorites = recipeRepository.getFavorites()
+
+                if (favorites.isEmpty()) {
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "No favorite recipes yet. Mark some as favorites!", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+
+                val recipeNames = favorites.map {
+                    "${it.recipeName} (Used ${it.usedCount}x)"
+                }.toTypedArray()
+
+                runOnUiThread {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("⭐ Favorite Recipes (${favorites.size})")
+                        .setItems(recipeNames) { _, which ->
+                            val selected = favorites[which]
+                            showRecipeHistoryDetails(selected)
+                        }
+                        .setNegativeButton("Close", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    showError(this@MainActivity, "Failed to load favorites: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun showRecipeHistoryDetails(recipe: RecipeHistoryEntity) {
+        val ingredients = recipe.ingredients.split(";")
+        val ingredientsList = ingredients.joinToString("\n• ", "• ")
+
+        val dateFormat = java.text.SimpleDateFormat("MMM dd, yyyy 'at' hh:mm a", java.util.Locale.getDefault())
+        val lastUsed = dateFormat.format(Date(recipe.lastUsedDate))
+
+        val message = buildString {
+            append("📅 Last used: $lastUsed\n")
+            append("🔢 Used ${recipe.usedCount} time(s)\n")
+            append("🌤️ Weather: ${recipe.weatherCondition} (${String.format("%.1f", recipe.temperature)}°C)\n")
+            append("⏱️ Ready in: ${recipe.readyInMinutes} minutes\n")
+            append("🍽️ Servings: ${recipe.servings}\n")
+            if (recipe.userRating > 0) append("⭐ Rating: ${recipe.userRating}/5\n")
+            append("\n🥗 Ingredients:\n$ingredientsList")
+            if (recipe.notes.isNotEmpty()) append("\n\n📝 Notes: ${recipe.notes}")
+        }
+
+        val scrollView = ScrollView(this)
+        val textView = TextView(this).apply {
+            text = message
+            setPadding(48, 32, 48, 32)
+            textSize = 16f
+        }
+        scrollView.addView(textView)
+
+        AlertDialog.Builder(this)
+            .setTitle(recipe.recipeName)
+            .setView(scrollView)
+            .setPositiveButton(if (recipe.isFavorite) "💔 Remove Favorite" else "❤️ Add to Favorites") { _, _ ->
+                toggleFavorite(recipe)
+            }
+            .setNeutralButton("⭐ Rate Recipe") { _, _ ->
+                showRatingDialog(recipe)
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun toggleFavorite(recipe: RecipeHistoryEntity) {
+        lifecycleScope.launch {
+            try {
+                recipeRepository.toggleFavorite(recipe.recipeId, !recipe.isFavorite)
+                runOnUiThread {
+                    val message = if (!recipe.isFavorite) "❤️ Added to favorites!" else "💔 Removed from favorites"
+                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    showError(this@MainActivity, "Failed to update favorite: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun showRatingDialog(recipe: RecipeHistoryEntity) {
+        val ratingOptions = arrayOf(
+            "⭐ 1 Star - Poor",
+            "⭐⭐ 2 Stars - Fair",
+            "⭐⭐⭐ 3 Stars - Good",
+            "⭐⭐⭐⭐ 4 Stars - Very Good",
+            "⭐⭐⭐⭐⭐ 5 Stars - Excellent"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Rate ${recipe.recipeName}")
+            .setItems(ratingOptions) { _, which ->
+                val rating = (which + 1).toFloat()
+                lifecycleScope.launch {
+                    try {
+                        recipeRepository.updateRating(recipe.recipeId, rating)
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "⭐ Rating saved: $rating/5", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            showError(this@MainActivity, "Failed to save rating: ${e.message}")
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 
@@ -1457,7 +1669,7 @@ interface SpoonacularApi {
 }
 
 interface GeminiApi {
-    @POST("v1beta/models/gemini-1.5-flash-latest:generateContent")
+    @POST("v1beta/models/gemini-2.5-flash:generateContent")
     @Headers("Content-Type: application/json")
     fun generateContent(
         @Query("key") apiKey: String,
